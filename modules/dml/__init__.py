@@ -1,5 +1,6 @@
+# pylint: disable=no-member,no-self-argument
 import torch
-import torch_directml
+import torch_directml # pylint: disable=import-error
 
 import modules.dml.hijack
 
@@ -7,7 +8,7 @@ from .optimizer.unknown import UnknownOptimizer
 
 class DirectML():
     def get_optimizer(device: torch.device):
-        assert(device.type == 'privateuseone')
+        assert device.type == 'privateuseone'
         try:
             device_name = torch_directml.device_name(device.index)
             if 'NVIDIA' in device_name or 'GeForce' in device_name:

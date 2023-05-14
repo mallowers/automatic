@@ -11,8 +11,7 @@ try:
     from modules.cmd_args import parser
 except:
     import argparse
-    parser = argparse.ArgumentParser(description="Stable Diffusion", conflict_handler='resolve', formatter_class=lambda prog: argparse.HelpFormatter(prog, max_help_position=55, indent_increment=2, width=200))
-
+    parser = argparse.ArgumentParser(description="SD.Next", conflict_handler='resolve', formatter_class=lambda prog: argparse.HelpFormatter(prog, max_help_position=55, indent_increment=2, width=200))
 
 class Dot(dict): # dot notation access to dictionary attributes
     __getattr__ = dict.get
@@ -21,10 +20,29 @@ class Dot(dict): # dot notation access to dictionary attributes
 
 
 log = logging.getLogger("sd")
-args = Dot({ 'debug': False, 'upgrade': False, 'noupdate': False, 'nodirectml': False, 'skip-extensions': False, 'skip-requirements': False, 'reset': False })
 quick_allowed = True
 errors = 0
 opts = {}
+args = Dot({
+    'debug': False,
+    'reset': False,
+    'upgrade': False,
+    'skip_update': False,
+    'skip_extensions': False,
+    'skip_requirements': False,
+    'skip_git': False,
+    'skip_torch': False,
+    'use_directml': False,
+    'use_ipex': False,
+    'use_cuda': False,
+    'use_rocm': False,
+    'experimental': False,
+    'test': False,
+    'tls_selfsign': False,
+    'reinstall': False,
+    'version': False,
+    'ignore': False,
+})
 
 
 # setup console and file logging
@@ -91,9 +109,14 @@ def installed(package, friendly: str = None):
 
 # install package using pip if not already installed
 def install(package, friendly: str = None, ignore: bool = False):
+    if args.reinstall:
+        global quick_allowed # pylint: disable=global-statement
+        quick_allowed = False
+    if args.use_ipex and package == "pytorch_lightning==1.9.4":
+        package = "pytorch_lightning==1.8.6"
     def pip(arg: str):
         arg = arg.replace('>=', '==')
-        log.info(f'Installing package: {arg.replace("install", "").replace("--upgrade", "").replace("--no-deps", "").replace("  ", " ").strip()}')
+        log.info(f'Installing package: {arg.replace("install", "").replace("--upgrade", "").replace("--no-deps", "").replace("--force", "").replace("  ", " ").strip()}')
         log.debug(f"Running pip: {arg}")
         result = subprocess.run(f'"{sys.executable}" -m pip {arg}', shell=True, check=False, env=os.environ, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         txt = result.stdout.decode(encoding="utf8", errors="ignore")
@@ -106,8 +129,7 @@ def install(package, friendly: str = None, ignore: bool = False):
             log.error(f'Error running pip: {arg}')
             log.debug(f'Pip output: {txt}')
         return txt
-
-    if not installed(package, friendly):
+    if args.reinstall or not installed(package, friendly):
         pip(f"install --upgrade {package}")
 
 
@@ -145,9 +167,9 @@ def update(folder):
     log.debug(f'Setting branch: {folder} / {branch}')
     git(f'checkout {branch}', folder)
     if branch is None:
-        git('pull --autostash --rebase', folder)
+        git('pull --autostash --rebase --force', folder)
     else:
-        git(f'pull origin {branch} --autostash --rebase', folder)
+        git(f'pull origin {branch} --autostash --rebase --force', folder)
     # branch = git('branch', folder)
 
 
@@ -169,18 +191,19 @@ def clone(url, folder, commithash=None):
 
 # check python version
 def check_python():
-    import platform
     supported_minors = [9, 10]
     if args.experimental:
         supported_minors.append(11)
     log.info(f'Python {platform.python_version()} on {platform.system()}')
     if not (int(sys.version_info.major) == 3 and int(sys.version_info.minor) in supported_minors):
         log.error(f"Incompatible Python version: {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro} required 3.{supported_minors}")
-        exit(1)
+        if not args.ignore:
+            exit(1)
     git_cmd = os.environ.get('GIT', "git")
     if shutil.which(git_cmd) is None:
         log.error('Git not found')
-        exit(1)
+        if not args.ignore:
+            exit(1)
     else:
         git_version = git('--version', folder=None, ignore=False)
         log.debug(f'Git {git_version.replace("git version", "").strip()}')
@@ -188,53 +211,76 @@ def check_python():
 
 # check torch version
 def check_torch():
-    if shutil.which('nvidia-smi') is not None or os.path.exists(os.path.join(os.environ.get('SystemRoot') or r'C:\Windows', 'System32', 'nvidia-smi.exe')):
-        log.info('nVidia toolkit detected')
-        torch_command = os.environ.get('TORCH_COMMAND', 'torch torchaudio torchvision --index-url https://download.pytorch.org/whl/cu118')
+    allow_cuda = not (args.use_rocm or args.use_directml or args.use_ipex)
+    allow_rocm = not (args.use_cuda or args.use_directml or args.use_ipex)
+    allow_ipex = not (args.use_cuda or args.use_rocm or args.use_directml)
+    allow_directml = not (args.use_cuda or args.use_rocm or args.use_ipex)
+    log.debug(f'Torch overrides: cuda={args.use_cuda} rocm={args.use_rocm} ipex={args.use_ipex} diml={args.use_directml}')
+    log.debug(f'Torch allowed: cuda={allow_cuda} rocm={allow_rocm} ipex={allow_ipex} diml={allow_directml}')
+    if allow_cuda and (shutil.which('nvidia-smi') is not None or os.path.exists(os.path.join(os.environ.get('SystemRoot') or r'C:\Windows', 'System32', 'nvidia-smi.exe'))):
+        log.info('nVidia CUDA toolkit detected')
+        torch_command = os.environ.get('TORCH_COMMAND', 'torch torchvision --index-url https://download.pytorch.org/whl/cu118')
         xformers_package = os.environ.get('XFORMERS_PACKAGE', 'xformers==0.0.17' if opts.get('cross_attention_optimization', '') == 'xFormers' else 'none')
-    elif shutil.which('rocminfo') is not None or os.path.exists('/opt/rocm/bin/rocminfo'):
-        log.info('AMD toolkit detected')
+    elif allow_rocm and (shutil.which('rocminfo') is not None or os.path.exists('/opt/rocm/bin/rocminfo') or os.path.exists('/dev/kfd')):
+        log.info('AMD ROCm toolkit detected')
         os.environ.setdefault('HSA_OVERRIDE_GFX_VERSION', '10.3.0')
-        torch_command = os.environ.get('TORCH_COMMAND', 'torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm5.4.2')
+        os.environ.setdefault('PYTORCH_HIP_ALLOC_CONF', 'garbage_collection_threshold:0.9,max_split_size_mb:512')
+        torch_command = os.environ.get('TORCH_COMMAND', 'torch==2.0.0 torchvision==0.15.1 --index-url https://download.pytorch.org/whl/rocm5.4.2')
+        xformers_package = os.environ.get('XFORMERS_PACKAGE', 'none')
+    elif allow_ipex and (shutil.which('sycl-ls') is not None or os.path.exists('/opt/intel/oneapi') or args.use_ipex):
+        log.info('Intel OneAPI Toolkit detected')
+        torch_command = os.environ.get('TORCH_COMMAND', 'torch==1.13.0a0 torchvision==0.14.1a0 intel_extension_for_pytorch==1.13.120+xpu -f https://developer.intel.com/ipex-whl-stable-xpu')
         xformers_package = os.environ.get('XFORMERS_PACKAGE', 'none')
     else:
         machine = platform.machine()
-        if 'arm' not in machine and 'aarch' not in machine and not args.nodirectml: # torch-directml is available on AMD64
+        if allow_directml and ('arm' not in machine and 'aarch' not in machine and args.use_directml):
             log.info('Using DirectML Backend')
-            torch_command = os.environ.get('TORCH_COMMAND', 'torch==2.0.0 torchvision torch-directml')
+            torch_command = os.environ.get('TORCH_COMMAND', 'torch-directml')
             xformers_package = os.environ.get('XFORMERS_PACKAGE', 'none')
+            if 'torch' in torch_command and not args.version:
+                install(torch_command, 'torch torchvision')
         else:
             log.info('Using CPU-only Torch')
-            torch_command = os.environ.get('TORCH_COMMAND', 'torch torchaudio torchvision')
+            torch_command = os.environ.get('TORCH_COMMAND', 'torch torchvision==0.15.1')
             xformers_package = os.environ.get('XFORMERS_PACKAGE', 'none')
-    if 'torch' in torch_command:
-        install(torch_command, 'torch torchvision torchaudio')
-    try:
-        import torch
-        log.info(f'Torch {torch.__version__}')
-        if torch.cuda.is_available():
-            if torch.version.cuda:
-                log.info(f'Torch backend: nVidia CUDA {torch.version.cuda} cuDNN {torch.backends.cudnn.version() if torch.backends.cudnn.is_available() else "N/A"}')
-            elif torch.version.hip:
-                log.info(f'Torch backend: AMD ROCm HIP {torch.version.hip}')
+    if 'torch' in torch_command and not args.version:
+        install(torch_command, 'torch torchvision')
+    if args.skip_torch:
+        log.info('Skipping Torch tests')
+    else:
+        try:
+            import torch
+            log.info(f'Torch {torch.__version__}')
+            if args.use_ipex and allow_ipex:
+                import intel_extension_for_pytorch as ipex # pylint: disable=import-error, unused-import
+                log.info(f'Torch backend: Intel OneAPI {torch.__version__}')
+                log.info(f'Torch detected GPU: {torch.xpu.get_device_name("xpu")} VRAM {round(torch.xpu.get_device_properties("xpu").total_memory / 1024 / 1024)}')
+            elif torch.cuda.is_available() and (allow_cuda or allow_rocm):
+                if torch.version.cuda and allow_cuda:
+                    log.info(f'Torch backend: nVidia CUDA {torch.version.cuda} cuDNN {torch.backends.cudnn.version() if torch.backends.cudnn.is_available() else "N/A"}')
+                elif torch.version.hip and allow_rocm:
+                    log.info(f'Torch backend: AMD ROCm HIP {torch.version.hip}')
+                else:
+                    log.warning('Unknown Torch backend')
+                for device in [torch.cuda.device(i) for i in range(torch.cuda.device_count())]:
+                    log.info(f'Torch detected GPU: {torch.cuda.get_device_name(device)} VRAM {round(torch.cuda.get_device_properties(device).total_memory / 1024 / 1024)} Arch {torch.cuda.get_device_capability(device)} Cores {torch.cuda.get_device_properties(device).multi_processor_count}')
             else:
-                log.warning('Unknown Torch backend')
-            for device in [torch.cuda.device(i) for i in range(torch.cuda.device_count())]:
-                log.info(f'Torch detected GPU: {torch.cuda.get_device_name(device)} VRAM {round(torch.cuda.get_device_properties(device).total_memory / 1024 / 1024)} Arch {torch.cuda.get_device_capability(device)} Cores {torch.cuda.get_device_properties(device).multi_processor_count}')
-        else:
-            try:
-                import torch_directml
-                import pkg_resources
-                version = pkg_resources.get_distribution("torch-directml")
-                log.info(f'Torch backend: DirectML ({version})')
-                for i in range(0, torch_directml.device_count()):
-                    log.info(f'Torch detected GPU: {torch_directml.device_name(i)}')
-                log.info(f'DirectML default device: {torch_directml.device_name(torch_directml.default_device())}')
-            except:
-                log.warning("Torch repoorts CUDA not available")
-    except Exception as e:
-        log.error(f'Could not load torch: {e}')
-        exit(1)
+                try:
+                    if args.use_directml and allow_directml:
+                        import torch_directml # pylint: disable=import-error
+                        import pkg_resources
+                        version = pkg_resources.get_distribution("torch-directml")
+                        log.info(f'Torch backend: DirectML ({version})')
+                        for i in range(0, torch_directml.device_count()):
+                            log.info(f'Torch detected GPU: {torch_directml.device_name(i)}')
+                except:
+                    log.warning("Torch reports CUDA not available")
+        except Exception as e:
+            log.error(f'Could not load torch: {e}')
+            if not args.ignore:
+                exit(1)
+    if args.version:
+        return
     try:
         if 'xformers' in xformers_package:
             install(f'--no-deps {xformers_package}', ignore=True)
@@ -245,6 +291,8 @@ def check_torch():
         install(tensorflow_package, 'tensorflow', ignore=True)
     except Exception as e:
         log.debug(f'Cannot install tensorflow package: {e}')
+    if opts.get('cuda_compile_mode', '') == 'hidet':
+        install('hidet', 'hidet')
 
 
 # install required packages
@@ -304,8 +352,9 @@ def run_extension_installer(folder):
 
 # get list of all enabled extensions
 def list_extensions(folder):
-    if opts.get('disable_all_extensions', 'none') != 'none':
-        log.debug('Disabled extensions: all')
+    disabled_extensions = opts.get('disable_all_extensions', 'none')
+    if disabled_extensions != 'none':
+        log.debug(f'Disabled extensions: {disabled_extensions}')
         return []
     disabled_extensions = set(opts.get('disabled_extensions', []))
     if len(disabled_extensions) > 0:
@@ -316,19 +365,28 @@ def list_extensions(folder):
 # run installer for each installed and enabled extension and optionally update them
 def install_extensions():
     from modules.paths_internal import extensions_builtin_dir, extensions_dir
+    extensions_duplicates = []
+    extensions_enabled = []
     for folder in [extensions_builtin_dir, extensions_dir]:
         if not os.path.isdir(folder):
             continue
         extensions = list_extensions(folder)
-        log.info(f'Extensions enabled: {extensions}')
+        log.debug(f'Extensions all: {extensions}')
         for ext in extensions:
-            if not args.noupdate:
+            if ext in extensions_enabled:
+                extensions_duplicates.append(ext)
+                continue
+            extensions_enabled.append(ext)
+            if not args.skip_update:
                 try:
                     update(os.path.join(folder, ext))
                 except:
                     log.error(f'Error updating extension: {os.path.join(folder, ext)}')
             if not args.skip_extensions:
                 run_extension_installer(os.path.join(folder, ext))
+    log.info(f'Extensions enabled: {extensions_enabled}')
+    if len(extensions_duplicates) > 0:
+        log.warning(f'Extensions duplicates: {extensions_duplicates}')
 
 
 # initialize and optionally update submodules
@@ -346,7 +404,7 @@ def install_submodules():
         git('checkout master')
         log.info('Continuing setup')
     txt = git('submodule --quiet update --init --recursive')
-    if not args.noupdate:
+    if not args.skip_update:
         log.info('Updating submodules')
         submodules = git('submodule').splitlines()
         for submodule in submodules:
@@ -357,15 +415,11 @@ def install_submodules():
                 log.error(f'Error updating submodule: {submodule}')
 
 
-def ensure_package(pkg):
-    try:
-        import pkg # type: ignore
-    except ImportError:
-        install(pkg)
-
-
 def ensure_base_requirements():
-    ensure_package('rich')
+    try:
+        import rich # pylint: disable=unused-import
+    except ImportError:
+        install('rich', 'rich')
 
 
 def install_requirements():
@@ -394,6 +448,8 @@ def set_environment():
     os.environ.setdefault('GRADIO_ANALYTICS_ENABLED', 'False')
     os.environ.setdefault('SAFETENSORS_FAST_GPU', '1')
     os.environ.setdefault('NUMEXPR_MAX_THREADS', '16')
+    os.environ.setdefault('PYTHONHTTPSVERIFY', '0')
+    os.environ.setdefault('HF_HUB_DISABLE_TELEMETRY', '1')
     if sys.platform == 'darwin':
         os.environ.setdefault('PYTORCH_ENABLE_MPS_FALLBACK', '1')
 
@@ -422,22 +478,25 @@ def check_extensions():
 
 
 # check version of the main repo and optionally upgrade it
-def check_version():
+def check_version(offline=False, reset=True): # pylint: disable=unused-argument
     if not os.path.exists('.git'):
         log.error('Not a git repository')
-        exit(1)
-    _status = git('status')
+        if not args.ignore:
+            exit(1)
+    # status = git('status')
     # if 'branch' not in status:
     #    log.error('Cannot get git repository status')
     #    exit(1)
     ver = git('log -1 --pretty=format:"%h %ad"')
     log.info(f'Version: {ver}')
+    if args.version:
+        return
     commit = git('rev-parse HEAD')
     try:
         import requests
     except ImportError:
         return
-    logging.getLogger("urllib3").setLevel(logging.WARNING)
+    logging.getLogger("urllib3").setLevel(logging.ERROR)
     commits = None
     try:
         commits = requests.get('https://api.github.com/repos/vladmandic/automatic/branches/master', timeout=10).json()
@@ -452,8 +511,13 @@ def check_version():
                     # git('git stash pop')
                     ver = git('log -1 --pretty=format:"%h %ad"')
                     log.info(f'Upgraded to version: {ver}')
-                except:
-                    log.error('Error upgrading repository')
+                except Exception:
+                    if not reset:
+                        log.error('Error during repository upgrade')
+                    else:
+                        log.warning('Retrying repository upgrade...')
+                        git_reset()
+                        check_version(offline=offline, reset=False)
             else:
                 log.info(f'Latest published version: {commits["commit"]["sha"]} {commits["commit"]["commit"]["author"]["date"]}')
     except Exception as e:
@@ -461,7 +525,7 @@ def check_version():
 
 
 def update_wiki():
-    if not args.noupdate:
+    if not args.skip_update:
         log.info('Updating Wiki')
         try:
             update(os.path.join(os.path.dirname(__file__), "wiki"))
@@ -487,7 +551,8 @@ def check_timestamp():
         version_time = int(git('log -1 --pretty=format:"%at"'))
     except Exception as e:
         log.error(f'Error getting local repository version: {e}')
-        exit(1)
+        if not args.ignore:
+            exit(1)
     log.debug(f'Repository update time: {time.ctime(int(version_time))}')
     if setup_time == -1:
         return False
@@ -503,16 +568,24 @@ def check_timestamp():
 
 
 def add_args():
-    parser.add_argument('--debug', default = False, action='store_true', help = "Run installer with debug logging, default: %(default)s")
-    parser.add_argument('--reset', default = False, action='store_true', help = "Reset main repository to latest version, default: %(default)s")
-    parser.add_argument('--upgrade', default = False, action='store_true', help = "Upgrade main repository to latest version, default: %(default)s")
-    parser.add_argument('--noupdate', default = False, action='store_true', help = "Skip update of extensions and submodules, default: %(default)s")
-    parser.add_argument('--nodirectml', default = False, action='store_true', help = "Although nVidia and AMD toolkit aren't detected, use CPU not DirectML, default: %(default)s")
-    parser.add_argument('--skip-requirements', default = False, action='store_true', help = "Skips checking and installing requirements, default: %(default)s")
-    parser.add_argument('--skip-extensions', default = False, action='store_true', help = "Skips running individual extension installers, default: %(default)s")
-    parser.add_argument('--skip-git', default = False, action='store_true', help = "Skips running all GIT operations, default: %(default)s")
-    parser.add_argument('--experimental', default = False, action='store_true', help = "Allow unsupported versions of libraries, default: %(default)s")
-    parser.add_argument('--test', default = False, action='store_true', help = "Run test only, default: %(default)s")
+    group = parser.add_argument_group('Setup options')
+    group.add_argument('--debug', default = False, action='store_true', help = "Run installer with debug logging, default: %(default)s")
+    group.add_argument('--reset', default = False, action='store_true', help = "Reset main repository to latest version, default: %(default)s")
+    group.add_argument('--upgrade', default = False, action='store_true', help = "Upgrade main repository to latest version, default: %(default)s")
+    group.add_argument("--use-ipex", default = False, action='store_true', help="Use Intel OneAPI XPU backend, default: %(default)s")
+    group.add_argument('--use-directml', default = False, action='store_true', help = "Use DirectML if no compatible GPU is detected, default: %(default)s")
+    group.add_argument("--use-cuda", default=False, action='store_true', help="Force use nVidia CUDA backend, default: %(default)s")
+    group.add_argument("--use-rocm", default=False, action='store_true', help="Force use AMD ROCm backend, default: %(default)s")
+    group.add_argument('--skip-update', default = False, action='store_true', help = "Skip update of extensions and submodules, default: %(default)s")
+    group.add_argument('--skip-requirements', default = False, action='store_true', help = "Skips checking and installing requirements, default: %(default)s")
+    group.add_argument('--skip-extensions', default = False, action='store_true', help = "Skips running individual extension installers, default: %(default)s")
+    group.add_argument('--skip-git', default = False, action='store_true', help = "Skips running all GIT operations, default: %(default)s")
+    group.add_argument('--skip-torch', default = False, action='store_true', help = "Skips running Torch checks, default: %(default)s")
+    group.add_argument('--experimental', default = False, action='store_true', help = "Allow unsupported versions of libraries, default: %(default)s")
+    group.add_argument('--reinstall', default = False, action='store_true', help = "Force reinstallation of all requirements, default: %(default)s")
+    group.add_argument('--test', default = False, action='store_true', help = "Run test only and exit")
+    group.add_argument('--version', default = False, action='store_true', help = "Print version information")
+    group.add_argument('--ignore', default = False, action='store_true', help = "Ignore any errors and attempt to continue")
 
 
 def parse_args():
@@ -550,14 +623,15 @@ def git_reset():
 
 def read_options():
     global opts # pylint: disable=global-statement
-    if os.path.isfile(args.ui_settings_file):
-        with open(args.ui_settings_file, "r", encoding="utf8") as file:
+    if os.path.isfile(args.config):
+        with open(args.config, "r", encoding="utf8") as file:
             opts = json.load(file)
 
 
 # entry method when used as module
 def run_setup():
     setup_logging(args.upgrade)
+    log.info('Starting SD.Next')
     read_options()
     check_python()
     if args.reset:
@@ -566,6 +640,8 @@ def run_setup():
         log.info('Skipping GIT operations')
     check_version()
     set_environment()
+    if args.reinstall:
+        log.info('Forcing reinstall of all packages')
     check_torch()
     install_requirements()
     if check_timestamp():
@@ -586,5 +662,7 @@ def run_setup():
 
 
 if __name__ == "__main__":
+    add_args()
+    ensure_base_requirements()
     parse_args()
     run_setup()

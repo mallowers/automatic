@@ -139,7 +139,7 @@ class ExtraNetworksPage:
             "card_clicked": onclick,
             "save_card_description": '"' + html.escape(f"""return saveCardDescription(event, {json.dumps(tabname)}, {json.dumps(item["local_preview"])})""") + '"',
             "save_card_preview": '"' + html.escape(f"""return saveCardPreview(event, {json.dumps(tabname)}, {json.dumps(item["local_preview"])})""") + '"',
-            "read_card_description": '"' + html.escape(f"""return readCardDescription(event, {json.dumps(tabname)}, {json.dumps(item["local_preview"])}, {json.dumps(item["description"])}, {json.dumps(self.name)}, {json.dumps(item["name"])})""") + '"',
+            "read_card_description": '"' + html.escape(f"""return readCardDescription(event, {json.dumps(tabname)}, {json.dumps(item["local_preview"])}, {json.dumps(item.get("description", ""))}, {json.dumps(self.name)}, {json.dumps(item["name"])})""") + '"',
             "search_term": item.get("search_term", ""),
             "read_card_metadata": '"' + html.escape(f"""return readCardMetadata(event, {json.dumps(self.name)}, {json.dumps(item["name"])})""") + '"',
         }
@@ -189,6 +189,7 @@ class ExtraNetworksUi:
         self.description_target_filename = None
         self.description_input = None
         self.tabname = None
+        self.search = None
 
 
 def pages_in_preferred_order(pages):
@@ -210,10 +211,11 @@ def create_ui(container, button, tabname):
     ui.tabname = tabname
     with gr.Tabs(elem_id=tabname+"_extra_tabs"):
         for page in ui.stored_extra_pages:
-            with gr.Tab(page.title):
+            with gr.Tab(page.title, id=page.title.lower().replace(" ", "_")):
                 page_elem = gr.HTML(page.create_html(ui.tabname))
+                page_elem.change(fn=lambda: None, _js=f'() => refreshExtraNetworks("{tabname}")', inputs=[], outputs=[])
                 ui.pages.append(page_elem)
-    _filter = gr.Textbox('', show_label=False, elem_id=tabname+"_extra_search", placeholder="Search...", visible=False)
+    ui.search = gr.Textbox('', show_label=False, elem_id=tabname+"_extra_search", placeholder="Search...", visible=False)
     ui.description_input = gr.TextArea('', show_label=False, elem_id=tabname+"_description_input", placeholder="Save/Replace Extra Network Description...", lines=2)
     button_refresh = ToolButton(refresh_symbol, elem_id=tabname+"_extra_refresh")
     button_close = ToolButton(close_symbol, elem_id=tabname+"_extra_close")
@@ -236,6 +238,7 @@ def create_ui(container, button, tabname):
         for pg in ui.stored_extra_pages:
             pg.refresh()
             res.append(pg.create_html(ui.tabname))
+        ui.search.update(value = ui.search.value)
         return res
 
     button_refresh.click(fn=refresh, inputs=[], outputs=ui.pages)

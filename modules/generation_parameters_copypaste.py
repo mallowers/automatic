@@ -36,7 +36,6 @@ def reset():
 def quote(text):
     if ',' not in str(text):
         return text
-
     text = str(text)
     text = text.replace('\\', '\\\\')
     text = text.replace('"', '\\"')
@@ -46,27 +45,29 @@ def quote(text):
 def image_from_url_text(filedata):
     if filedata is None:
         return None
-
     if type(filedata) == list and len(filedata) > 0 and type(filedata[0]) == dict and filedata[0].get("is_file", False):
         filedata = filedata[0]
-
     if type(filedata) == dict and filedata.get("is_file", False):
         filename = filedata["name"]
         is_in_right_dir = ui_tempdir.check_tmp_file(shared.demo, filename)
         if is_in_right_dir:
             return Image.open(filename)
         else:
-            print(f'Attempted to open file outside of allowed directories: {filename}')
-
+            shared.log.warning(f'File access denied: {filename}')
+            return None
     if type(filedata) == list:
         if len(filedata) == 0:
             return None
-
         filedata = filedata[0]
-
+    if type(filedata) == dict:
+        shared.log.warning('Incorrect filedata received')
+        return None
     if filedata.startswith("data:image/png;base64,"):
         filedata = filedata[len("data:image/png;base64,"):]
-
+    if filedata.startswith("data:image/webp;base64,"):
+        filedata = filedata[len("data:image/webp;base64,"):]
+    if filedata.startswith("data:image/jpeg;base64,"):
+        filedata = filedata[len("data:image/jpeg;base64,"):]
     filedata = base64.decodebytes(filedata.encode('utf-8'))
     image = Image.open(io.BytesIO(filedata))
     return image
@@ -143,8 +144,8 @@ def connect_paste_params_buttons():
         binding.paste_button.click(
             fn=None,
             _js=f"switch_to_{binding.tabname}",
-            inputs=None,
-            outputs=None,
+            inputs=[],
+            outputs=[],
         )
 
 
@@ -316,7 +317,7 @@ infotext_to_setting_name_mapping = [
     ('Token merging merge attention', 'token_merging_merge_attention'),
     ('Token merging merge cross attention', 'token_merging_merge_cross_attention'),
     ('Token merging merge mlp', 'token_merging_merge_mlp'),
-    ('Token merging maximum downsampling', 'token_merging_maximum_downsampling'),
+    ('Token merging maximum downsampling', 'token_merging_maximum_down_sampling'),
     ('Token merging stride x', 'token_merging_stride_x'),
     ('Token merging stride y', 'token_merging_stride_y')
 ]
@@ -343,9 +344,9 @@ def create_override_settings_dict(text_pairs):
     return res
 
 
-def connect_paste(button, paste_fields, input_comp, override_settings_component, tabname): # pylint: disable=redefined-outer-name
+def connect_paste(button, local_paste_fields, input_comp, override_settings_component, tabname):
     def paste_func(prompt):
-        if 'Negative prompt' not in prompt and 'Steps' not in prompt:
+        if prompt is not None and 'Negative prompt' not in prompt and 'Steps' not in prompt:
             prompt = None
         if not prompt and not shared.cmd_opts.hide_ui_dir_config:
             filename = os.path.join(data_path, "params.txt")
@@ -357,7 +358,7 @@ def connect_paste(button, paste_fields, input_comp, override_settings_component,
         params = parse_generation_parameters(prompt)
         script_callbacks.infotext_pasted_callback(prompt, params)
         res = []
-        for output, key in paste_fields:
+        for output, key in local_paste_fields:
             if callable(key):
                 v = key(params)
             else:
@@ -394,12 +395,12 @@ def connect_paste(button, paste_fields, input_comp, override_settings_component,
                 vals[param_name] = v
             vals_pairs = [f"{k}: {v}" for k, v in vals.items()]
             return gr.Dropdown.update(value=vals_pairs, choices=vals_pairs, visible=len(vals_pairs) > 0)
-        paste_fields = paste_fields + [(override_settings_component, paste_settings)]
+        local_paste_fields = local_paste_fields + [(override_settings_component, paste_settings)]
 
     button.click(
         fn=paste_func,
         inputs=[input_comp],
-        outputs=[x[0] for x in paste_fields],
+        outputs=[x[0] for x in local_paste_fields],
     )
     button.click(
         fn=None,
