@@ -112,8 +112,6 @@ def set_cuda_params():
     global dtype, dtype_vae, dtype_unet, unet_needs_upcast # pylint: disable=global-statement
     # set dtype
     ok = test_fp16()
-    if shared.cmd_opts.use_directml:
-        shared.opts.no_half = True
     if ok and shared.opts.cuda_dtype == 'FP32':
         shared.log.info('CUDA FP16 test passed but desired mode is set to FP32')
     if shared.opts.cuda_dtype == 'FP16' and ok:
@@ -174,6 +172,8 @@ def autocast(disable=False):
         return contextlib.nullcontext()
     if dtype == torch.float32 or shared.cmd_opts.precision == "Full":
         return contextlib.nullcontext()
+    if shared.cmd_opts.use_directml:
+        return torch.dml.amp.autocast(dtype)
     if shared.cmd_opts.use_ipex:
         return torch.xpu.amp.autocast(enabled=True, dtype=dtype, cache_enabled=False)
     else:
