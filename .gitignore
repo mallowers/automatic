@@ -1,15 +1,19 @@
 # defaults
 __pycache__
-/params.txt
+setup.log
 /cache.json
 /config.json
-/ui-config.json
-/setup.log
+/params.txt
 /styles.csv
+/ui-config.json
 /user.css
 /webui-user.bat
 /webui-user.sh
+/html/extensions.json
 /javascript/themes.json
+node_modules
+pnpm-lock.yaml
+package-lock.json
 venv
 
 # all models and temp files
@@ -24,6 +28,13 @@ venv
 *.zip
 *.rar
 *.pyc
+/*.bat
+/*.sh
+/*.txt
+/*.mp3
+/*.lnk
+!webui.bat
+!webui.sh
 
 # all dynamic stuff
 /repositories/**/*

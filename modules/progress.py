@@ -8,12 +8,20 @@ import modules.shared as shared
 current_task = None
 pending_tasks = {}
 finished_tasks = []
+recorded_results = []
+recorded_results_limit = 2
 
 
 def start_task(id_task):
     global current_task # pylint: disable=global-statement
     current_task = id_task
     pending_tasks.pop(id_task, None)
+
+
+def record_results(id_task, res):
+    recorded_results.append((id_task, res))
+    if len(recorded_results) > recorded_results_limit:
+        recorded_results.pop(0)
 
 
 def finish_task(id_task):
@@ -54,7 +62,7 @@ def progressapi(req: ProgressRequest):
     queued = req.id_task in pending_tasks
     completed = req.id_task in finished_tasks
     if not active:
-        return ProgressResponse(active=active, queued=queued, completed=completed, id_live_preview=-1, textinfo="In queue..." if queued else "Waiting...")
+        return ProgressResponse(active=active, queued=queued, completed=completed, id_live_preview=-1, textinfo="Queued..." if queued else "Waiting...")
     progress = 0
     job_count, job_no = shared.state.job_count, shared.state.job_no
     sampling_steps, sampling_step = shared.state.sampling_steps, shared.state.sampling_step
