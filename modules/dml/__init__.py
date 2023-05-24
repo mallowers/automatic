@@ -9,7 +9,6 @@ from .optimizer.unknown import UnknownOptimizer
 class DirectML():
     _is_autocast_enabled = False
     _autocast_dtype = torch.float16
-
     def get_optimizer(device: torch.device):
         assert device.type == 'privateuseone'
         try:
@@ -41,7 +40,6 @@ class DirectML():
 
     def set_autocast_enabled(enabled: bool):
         DirectML._is_autocast_enabled = enabled
-
 
 # Alternative of torch.cuda for DirectML.
 DirectML.amp = amp
